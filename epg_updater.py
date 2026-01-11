@@ -6,7 +6,8 @@ import xml.etree.ElementTree as ET
 import re
 
 # --- CONFIGURATION ---
-RETENTION_DAYS = 30  # Keep 1 month of history
+# ONLY keep events that start on or after this date
+CUTOFF_DATE = datetime.datetime(2026, 1, 10)  # Jan 10, 2026
 FILE_PATH = "epg.xml.gz"
 
 # --- 1. Get Secrets ---
@@ -40,11 +41,11 @@ def keep_channel(name):
         if any(x in n for x in ['501', '502', '503', '504', '505', '506', '507', 'news', 'cricket', 'league', 'footy']):
             return True
 
-    # 2. Sky Sports UK (Must have 'sky' AND 'sports')
+    # 2. Sky Sports UK
     if "sky" in n and "sports" in n:
         return True
 
-    # 3. TNT Sports UK (Must have 'tnt' AND 'sports')
+    # 3. TNT Sports UK
     if "tnt" in n and "sports" in n:
         return True
         
@@ -62,7 +63,6 @@ scraper = cloudscraper.create_scraper()
 try:
     response = scraper.get(URL)
     response.raise_for_status()
-    # Smart Detection (GZIP vs Plain)
     if response.content.startswith(b'\x1f\x8b'):
         xml_data = gzip.decompress(response.content).decode('utf-8')
     else:
@@ -76,16 +76,14 @@ print("Parsing New Data...")
 try:
     new_root = ET.fromstring(xml_data)
 except ET.ParseError:
-    # Fix XML entities if broken
     xml_data = re.sub(r'&(?!(?:amp|lt|gt|apos|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', xml_data)
     new_root = ET.fromstring(xml_data)
 
-# Dictionary to hold merged programmes: key = (channel_id, start_time)
 merged_programmes = {}
 valid_channel_ids = set()
 final_channels = {}
 
-# A. Process NEW Channels
+# Filter Channels (New)
 for channel in new_root.findall('channel'):
     cid = channel.get('id')
     name = channel.find('display-name').text or ""
@@ -93,72 +91,59 @@ for channel in new_root.findall('channel'):
         valid_channel_ids.add(cid)
         final_channels[cid] = channel
 
-# B. Process NEW Programmes
+# Filter Programmes (New)
 for p in new_root.findall('programme'):
     cid = p.get('channel')
     if cid in valid_channel_ids:
-        # Convert Time
         start_ist = convert_to_ist(p.get('start'))
         stop_ist = convert_to_ist(p.get('stop'))
         p.set('start', start_ist)
         p.set('stop', stop_ist)
-        
-        # Save to merger dict
         merged_programmes[(cid, start_ist)] = p
 
 # --- 5. Merge with Old History ---
 if os.path.exists(FILE_PATH):
-    print("Loading existing history to preserve data...")
+    print("Loading existing history...")
     try:
         with gzip.open(FILE_PATH, 'rb') as f:
             old_root = ET.fromstring(f.read())
             
-        # Extract OLD Channels (that match our filter)
         for channel in old_root.findall('channel'):
             cid = channel.get('id')
             name = channel.find('display-name').text or ""
-            # Only keep history if it's one of our target channels
             if keep_channel(name):
                 valid_channel_ids.add(cid)
                 if cid not in final_channels:
                     final_channels[cid] = channel
 
-        # Extract OLD Programmes
         for p in old_root.findall('programme'):
             cid = p.get('channel')
             start = p.get('start')
-            
-            # If it's a target channel AND we don't have this show in the new data yet
             if cid in valid_channel_ids:
                 if (cid, start) not in merged_programmes:
                     merged_programmes[(cid, start)] = p
-                    
     except Exception as e:
-        print(f"Warning: Could not load old history ({e}). Starting fresh.")
+        print(f"Warning: Could not load history ({e}). Starting fresh.")
 
-# --- 6. Prune (Remove > 30 Days) ---
-print(f"Pruning data older than {RETENTION_DAYS} days...")
-cutoff = datetime.datetime.now() - datetime.timedelta(days=RETENTION_DAYS)
+# --- 6. Prune (Strict Date Filter: >= Jan 10, 2026) ---
+print(f"Removing all data before {CUTOFF_DATE}...")
 final_prog_list = []
 
 for key, prog in merged_programmes.items():
-    stop_dt = get_date_object(prog.get('stop'))
+    start_str = prog.get('start')
+    start_dt = get_date_object(start_str)
     
-    # Keep if:
-    # 1. We can't parse the date (safety)
-    # 2. The show ends AFTER the cutoff date (it's recent)
-    if not stop_dt or stop_dt > cutoff:
+    # Keep ONLY if start date is valid AND is on/after Jan 10 2026
+    if start_dt and start_dt >= CUTOFF_DATE:
         final_prog_list.append(prog)
 
 # --- 7. Save ---
 print(f"Saving {FILE_PATH}...")
 output_root = ET.Element("tv", new_root.attrib)
 
-# Add Channels (Sorted by ID)
 for cid in sorted(final_channels.keys()):
     output_root.append(final_channels[cid])
 
-# Add Events (Sorted by Start Time)
 final_prog_list.sort(key=lambda x: x.get('start'))
 for p in final_prog_list:
     output_root.append(p)
