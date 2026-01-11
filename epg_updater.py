@@ -33,19 +33,23 @@ def convert_to_ist(time_str):
         return time_str
 
 def keep_channel(name):
-    """Filter Logic: Fox 501-507, TNT Sports, Sky Sports"""
+    """Filter Logic: Fox, Sky, TNT, and Kayo"""
     n = name.lower()
     
-    # 1. Fox Sports AU (501-507 + News)
+    # 1. Kayo Sports (New)
+    if "kayo" in n:
+        return True
+
+    # 2. Fox Sports AU (501-507 + News)
     if "fox" in n:
         if any(x in n for x in ['501', '502', '503', '504', '505', '506', '507', 'news', 'cricket', 'league', 'footy']):
             return True
 
-    # 2. Sky Sports UK
+    # 3. Sky Sports UK
     if "sky" in n and "sports" in n:
         return True
 
-    # 3. TNT Sports UK
+    # 4. TNT Sports UK
     if "tnt" in n and "sports" in n:
         return True
         
