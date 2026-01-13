@@ -6,8 +6,7 @@ import xml.etree.ElementTree as ET
 import re
 
 # --- CONFIGURATION ---
-# ONLY keep events that start on or after this date
-CUTOFF_DATE = datetime.datetime(2026, 1, 10)  # Jan 10, 2026
+CUTOFF_DATE = datetime.datetime(2026, 1, 10)  # Keep events from Jan 10 onwards
 FILE_PATH = "epg.xml.gz"
 
 # --- 1. Get Secrets ---
@@ -22,7 +21,7 @@ URL = f"https://centra.ink/xmltv.php?username={USERNAME}&password={PASSWORD}&ext
 
 # --- 2. Helper Functions ---
 def convert_to_ist(time_str):
-    """Converts a time string to IST (+0530)"""
+    """Converts UTC to IST (+0530)"""
     if not time_str: return ""
     try:
         dt_part = time_str.split()[0]
@@ -33,12 +32,11 @@ def convert_to_ist(time_str):
         return time_str
 
 def keep_channel(name):
-    """Filter Logic: Fox, Sky, TNT, and Kayo"""
+    """Filter Logic: Kayo, Fox, Sky, TNT"""
     n = name.lower()
     
     # 1. Kayo Sports
-    if "kayo" in n:
-        return True
+    if "kayo" in n: return True
 
     # 2. Fox Sports AU (501-507 + News)
     if "fox" in n:
@@ -46,12 +44,10 @@ def keep_channel(name):
             return True
 
     # 3. Sky Sports UK
-    if "sky" in n and "sports" in n:
-        return True
+    if "sky" in n and "sports" in n: return True
 
     # 4. TNT Sports UK
-    if "tnt" in n and "sports" in n:
-        return True
+    if "tnt" in n and "sports" in n: return True
         
     return False
 
@@ -61,30 +57,24 @@ def get_date_object(time_str):
     except:
         return None
 
-# --- 3. Download New Data (Anti-Block Mode) ---
-print("Downloading EPG...")
+# --- 3. Download with MAG200 Agent ---
+print("Downloading EPG with MAG200 Agent...")
 
-# Fix 403: Configure scraper to mimic a real Chrome browser on Windows
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
-)
+# Create scraper
+scraper = cloudscraper.create_scraper()
+
+# Force the specific MAG200 STB User-Agent
+stb_headers = {
+    "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 2738 Mobile Safari/533.3",
+    "Accept": "*/*",
+    "Connection": "keep-alive"
+}
 
 try:
-    # Explicit headers to fool the firewall
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Referer": "https://google.com"
-    }
-    
-    response = scraper.get(URL, headers=headers)
+    response = scraper.get(URL, headers=stb_headers)
     response.raise_for_status()
     
+    # Check if file is GZIP or Plain Text
     if response.content.startswith(b'\x1f\x8b'):
         xml_data = gzip.decompress(response.content).decode('utf-8')
     else:
@@ -92,11 +82,9 @@ try:
         
 except Exception as e:
     print(f"Download Error: {e}")
-    # Fallback: Print first 200 chars of response to debug if it's not a 403 next time
-    try:
-        print(f"Server Response: {response.text[:200]}")
-    except:
-        pass
+    # Debug: print first 200 chars to see if it's an error page
+    try: print(f"Server Says: {response.text[:200]}")
+    except: pass
     exit(1)
 
 # --- 4. Parse New Data ---
@@ -104,6 +92,7 @@ print("Parsing New Data...")
 try:
     new_root = ET.fromstring(xml_data)
 except ET.ParseError:
+    # Clean invalid XML characters
     xml_data = re.sub(r'&(?!(?:amp|lt|gt|apos|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', xml_data)
     new_root = ET.fromstring(xml_data)
 
@@ -123,11 +112,9 @@ for channel in new_root.findall('channel'):
 for p in new_root.findall('programme'):
     cid = p.get('channel')
     if cid in valid_channel_ids:
-        start_ist = convert_to_ist(p.get('start'))
-        stop_ist = convert_to_ist(p.get('stop'))
-        p.set('start', start_ist)
-        p.set('stop', stop_ist)
-        merged_programmes[(cid, start_ist)] = p
+        p.set('start', convert_to_ist(p.get('start')))
+        p.set('stop', convert_to_ist(p.get('stop')))
+        merged_programmes[(cid, p.get('start'))] = p
 
 # --- 5. Merge with Old History ---
 if os.path.exists(FILE_PATH):
@@ -153,14 +140,12 @@ if os.path.exists(FILE_PATH):
     except Exception as e:
         print(f"Warning: Could not load history ({e}). Starting fresh.")
 
-# --- 6. Prune (Strict Date Filter: >= Jan 10, 2026) ---
-print(f"Removing all data before {CUTOFF_DATE}...")
+# --- 6. Prune (Strict Date Filter) ---
+print(f"Removing data before {CUTOFF_DATE}...")
 final_prog_list = []
 
 for key, prog in merged_programmes.items():
-    start_str = prog.get('start')
-    start_dt = get_date_object(start_str)
-    
+    start_dt = get_date_object(prog.get('start'))
     if start_dt and start_dt >= CUTOFF_DATE:
         final_prog_list.append(prog)
 
