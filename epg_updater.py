@@ -36,7 +36,7 @@ def keep_channel(name):
     """Filter Logic: Fox, Sky, TNT, and Kayo"""
     n = name.lower()
     
-    # 1. Kayo Sports (New)
+    # 1. Kayo Sports
     if "kayo" in n:
         return True
 
@@ -61,18 +61,42 @@ def get_date_object(time_str):
     except:
         return None
 
-# --- 3. Download New Data ---
+# --- 3. Download New Data (Anti-Block Mode) ---
 print("Downloading EPG...")
-scraper = cloudscraper.create_scraper()
+
+# Fix 403: Configure scraper to mimic a real Chrome browser on Windows
+scraper = cloudscraper.create_scraper(
+    browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'desktop': True
+    }
+)
+
 try:
-    response = scraper.get(URL)
+    # Explicit headers to fool the firewall
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://google.com"
+    }
+    
+    response = scraper.get(URL, headers=headers)
     response.raise_for_status()
+    
     if response.content.startswith(b'\x1f\x8b'):
         xml_data = gzip.decompress(response.content).decode('utf-8')
     else:
         xml_data = response.text
+        
 except Exception as e:
     print(f"Download Error: {e}")
+    # Fallback: Print first 200 chars of response to debug if it's not a 403 next time
+    try:
+        print(f"Server Response: {response.text[:200]}")
+    except:
+        pass
     exit(1)
 
 # --- 4. Parse New Data ---
@@ -137,7 +161,6 @@ for key, prog in merged_programmes.items():
     start_str = prog.get('start')
     start_dt = get_date_object(start_str)
     
-    # Keep ONLY if start date is valid AND is on/after Jan 10 2026
     if start_dt and start_dt >= CUTOFF_DATE:
         final_prog_list.append(prog)
 
