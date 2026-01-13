@@ -2,42 +2,46 @@ name: Daily EPG Update
 
 on:
   schedule:
-    # Run at minute 0 past every 10th hour (e.g., 00:00, 10:00, 20:00 UTC)
     - cron: '0 */10 * * *'
-  workflow_dispatch: # Allows you to click the "Run workflow" button manually
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
-  update-epg:
+  update-and-deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - name: Install Dependencies
-        # Installs cloudscraper for downloading and lxml for fixing broken XML
-        run: pip install cloudscraper lxml
+      - run: pip install cloudscraper lxml
 
-      - name: Run Updater
+      - run: python epg_updater.py
         env:
           CENTRA_USERNAME: ${{ secrets.CENTRA_USERNAME }}
           CENTRA_PASSWORD: ${{ secrets.CENTRA_PASSWORD }}
-        run: python epg_updater.py
 
-      - name: Commit & Push
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
+      - run: |
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
           git add epg.xml.gz
-          # Attempt to commit; if nothing changed, exit gracefully
           git commit -m "Auto-update EPG" || exit 0
-          # Pull latest changes to fix the "rejected" error, then push
           git pull --rebase origin main
           git push
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - uses: actions/deploy-pages@v4
