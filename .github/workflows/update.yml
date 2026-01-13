@@ -2,9 +2,8 @@ name: Daily EPG Update
 
 on:
   schedule:
-    # Run at minute 0 past every 10th hour (e.g., 00:00, 10:00, 20:00 UTC)
     - cron: '0 */10 * * *'
-  workflow_dispatch: # Allows manual trigger button
+  workflow_dispatch:
 
 jobs:
   update-epg:
@@ -22,8 +21,8 @@ jobs:
           python-version: '3.x'
 
       - name: Install Dependencies
-        # We install cloudscraper directly here so you don't need a requirements.txt file
-        run: pip install cloudscraper
+        # Added lxml here
+        run: pip install cloudscraper lxml
 
       - name: Run Updater
         env:
