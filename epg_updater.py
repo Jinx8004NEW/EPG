@@ -2,7 +2,7 @@ import cloudscraper
 import gzip
 import os
 import datetime
-import xml.etree.ElementTree as ET
+from lxml import etree  # Using the powerful parser
 import re
 
 # --- CONFIGURATION ---
@@ -20,21 +20,10 @@ if not USERNAME or not PASSWORD:
 URL = f"https://centra.ink/xmltv.php?username={USERNAME}&password={PASSWORD}&ext=.xml.gz"
 
 # --- 2. Helper Functions ---
-def clean_xml_data(raw_xml):
-    """Aggressively removes illegal characters from XML"""
-    # 1. Remove invalid XML control characters (ASCII 0-8, 11-12, 14-31)
-    # XML 1.0 only allows \x09 (tab), \x0A (newline), \x0D (carriage return)
-    raw_xml = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', raw_xml)
-    
-    # 2. Fix unescaped ampersands (e.g. "Tom & Jerry" -> "Tom &amp; Jerry")
-    # Matches '&' that is NOT followed by an existing entity like 'amp;'
-    raw_xml = re.sub(r'&(?!(?:amp|lt|gt|apos|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', raw_xml)
-    
-    return raw_xml
-
 def convert_to_ist(time_str):
     if not time_str: return ""
     try:
+        # lxml returns strings, ensure we handle them cleanly
         dt_part = time_str.split()[0]
         dt = datetime.datetime.strptime(dt_part, '%Y%m%d%H%M%S')
         dt_ist = dt + datetime.timedelta(hours=5, minutes=30)
@@ -43,6 +32,7 @@ def convert_to_ist(time_str):
         return time_str
 
 def keep_channel(name):
+    if not name: return False
     n = name.lower()
     if "kayo" in n: return True
     if "fox" in n:
@@ -72,30 +62,20 @@ try:
     response.raise_for_status()
     
     if response.content.startswith(b'\x1f\x8b'):
-        xml_data = gzip.decompress(response.content).decode('utf-8', errors='replace')
+        xml_bytes = gzip.decompress(response.content)
     else:
-        xml_data = response.text
+        xml_bytes = response.content
         
 except Exception as e:
     print(f"Download Error: {e}")
     exit(1)
 
-# --- 4. Clean & Parse ---
-print("Cleaning XML data...")
-xml_data = clean_xml_data(xml_data)
-
-print("Parsing XML...")
-try:
-    new_root = ET.fromstring(xml_data)
-except ET.ParseError as e:
-    print(f"Critical XML Error even after cleaning: {e}")
-    # Last ditch attempt: wrap in a dummy root if structure is totally broken
-    try:
-        print("Attempting fallback parse...")
-        new_root = ET.fromstring(f"<tv>{xml_data}</tv>")
-    except:
-        print("Failed. Saving debug file.")
-        exit(1)
+# --- 4. Parse with Recovery Mode ---
+print("Parsing XML (Recover Mode)...")
+# This parser ignores errors and fixes bad tags automatically
+parser = etree.XMLParser(recover=True, encoding='utf-8')
+new_tree = etree.fromstring(xml_bytes, parser=parser)
+new_root = new_tree
 
 merged_programmes = {}
 valid_channel_ids = set()
@@ -104,7 +84,11 @@ final_channels = {}
 # Filter Channels
 for channel in new_root.findall('channel'):
     cid = channel.get('id')
-    name = channel.find('display-name').text or ""
+    
+    # lxml find syntax for text
+    display_name = channel.find('display-name')
+    name = display_name.text if display_name is not None else ""
+    
     if keep_channel(name):
         valid_channel_ids.add(cid)
         final_channels[cid] = channel
@@ -122,17 +106,20 @@ if os.path.exists(FILE_PATH):
     print("Loading existing history...")
     try:
         with gzip.open(FILE_PATH, 'rb') as f:
-            old_root = ET.fromstring(f.read())
+            # Use recover parser for old file too, just in case
+            old_tree = etree.fromstring(f.read(), parser=parser)
             
-        for channel in old_root.findall('channel'):
+        for channel in old_tree.findall('channel'):
             cid = channel.get('id')
-            name = channel.find('display-name').text or ""
+            display_name = channel.find('display-name')
+            name = display_name.text if display_name is not None else ""
+            
             if keep_channel(name):
                 valid_channel_ids.add(cid)
                 if cid not in final_channels:
                     final_channels[cid] = channel
 
-        for p in old_root.findall('programme'):
+        for p in old_tree.findall('programme'):
             cid = p.get('channel')
             start = p.get('start')
             if cid in valid_channel_ids:
@@ -152,18 +139,20 @@ for key, prog in merged_programmes.items():
 
 # --- 7. Save ---
 print(f"Saving {FILE_PATH}...")
-output_root = ET.Element("tv", new_root.attrib)
+output_root = etree.Element("tv", new_root.attrib)
 
+# Add Channels
 for cid in sorted(final_channels.keys()):
     output_root.append(final_channels[cid])
 
+# Add Events
 final_prog_list.sort(key=lambda x: x.get('start'))
 for p in final_prog_list:
     output_root.append(p)
 
-tree = ET.ElementTree(output_root)
+# Save using lxml tobytes
 with gzip.open(FILE_PATH, 'wb') as f:
-    tree.write(f, encoding='utf-8', xml_declaration=True)
+    f.write(etree.tostring(output_root, encoding='utf-8', xml_declaration=True, pretty_print=True))
 
 size_mb = os.path.getsize(FILE_PATH) / (1024 * 1024)
 print(f"Success. New File Size: {size_mb:.2f} MB")
