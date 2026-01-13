@@ -19,29 +19,36 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - run: pip install cloudscraper lxml
+      - name: Install dependencies
+        run: pip install cloudscraper lxml
 
-      - run: python epg_updater.py
+      - name: Run EPG updater
         env:
           CENTRA_USERNAME: ${{ secrets.CENTRA_USERNAME }}
           CENTRA_PASSWORD: ${{ secrets.CENTRA_PASSWORD }}
+        run: python epg_updater.py
 
-      - run: |
+      - name: Commit and push changes
+        run: |
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add epg.xml.gz
-          git commit -m "Auto-update EPG" || exit 0
+          git commit -m "Auto-update EPG [skip ci]" || exit 0
           git pull --rebase origin main
           git push
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: .
 
-      - uses: actions/deploy-pages@v4
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
